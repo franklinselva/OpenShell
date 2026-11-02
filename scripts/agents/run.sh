@@ -543,6 +543,11 @@ for ((provider_index = 0; provider_index < PROVIDER_COUNT; provider_index++)); d
             [[ -z "$CODEX_PROVIDER_PROFILE_OVERRIDE" ]] || set_var "$profile_var" "$CODEX_PROVIDER_PROFILE_OVERRIDE"
             [[ -z "$CODEX_ACCESS_KEY_OVERRIDE" ]] || set_var "$refresh_key_var" "$CODEX_ACCESS_KEY_OVERRIDE"
             ;;
+        claude-campaign)
+            # One gateway provider per Claude account, so lanes on different accounts run side by side.
+            [[ "${CAMPAIGN_ACCOUNT:-}" =~ ^[a-z0-9-]+$ ]] || fail "set CAMPAIGN_ACCOUNT to the Claude account label (lowercase, digits, hyphens)"
+            set_var "$name_var" "claude-campaign-$CAMPAIGN_ACCOUNT"
+            ;;
     esac
 done
 
@@ -624,9 +629,12 @@ prepare_immutable_sandbox_source() {
     if [[ -f "$source" ]]; then
         local lower_name
         lower_name="$(basename "$source" | tr '[:upper:]' '[:lower:]')"
-        [[ "$lower_name" == *dockerfile* || "$lower_name" == *.dockerfile ]] || fail "immutable agent payload requires --from to be a Dockerfile path or directory: $source"
+        [[ "$lower_name" == *dockerfile* || "$lower_name" == *containerfile* ]] || fail "immutable agent payload requires --from to be a Dockerfile path or directory: $source"
         dockerfile="$(cd "$(dirname "$source")" && pwd)/$(basename "$source")"
         context="$(cd "$(dirname "$source")" && pwd)"
+    elif [[ -d "$source" && -f "$source/Containerfile" ]]; then
+        context="$(cd "$source" && pwd)"
+        dockerfile="$context/Containerfile"
     elif [[ -d "$source" && -f "$source/Dockerfile" ]]; then
         context="$(cd "$source" && pwd)"
         dockerfile="$context/Dockerfile"
@@ -802,6 +810,11 @@ HARNESS_ENV_ARGS=(
     "OPENSHELL_AGENT_MAX_TRANSIENT_FAILURES=$MAX_TRANSIENT_FAILURES"
     "OPENSHELL_AGENT_PAYLOAD_VERSION=$AGENT_PAYLOAD_VERSION"
 )
+# The workload gets only the environment passed here, not the image's ENV: forward runtime paths
+# for images whose writable workspace is not /sandbox.
+for runtime_var in OPENSHELL_AGENT_STATE_DIR OPENSHELL_AGENT_HOME; do
+    [[ -z "${!runtime_var:-}" ]] || HARNESS_ENV_ARGS+=("$runtime_var=${!runtime_var}")
+done
 
 case "$HARNESS" in
     codex)
@@ -814,6 +827,9 @@ case "$HARNESS" in
             "CODEX_MODEL=${CODEX_MODEL:-$HARNESS_MODEL}"
             "CODEX_REASONING=${CODEX_REASONING:-$HARNESS_REASONING}"
         )
+        ;;
+    claude)
+        HARNESS_ENV_ARGS+=("CLAUDE_MODEL=${CLAUDE_MODEL:-$HARNESS_MODEL}")
         ;;
 esac
 
